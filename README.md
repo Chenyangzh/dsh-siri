@@ -10,10 +10,12 @@
 | 方法与路径 | 作用 |
 | --- | --- |
 | `POST /siri` | 请求体 `{"text": "…"}`,返回 `{"reply": "…"}` |
-| `GET /siri/last` | 取上一轮的结果(任务太慢时 Siri 先说"还在处理") |
+| `GET /siri/last` | 取上一轮的结果(任务太慢时 Siri 先说"还在处理";也可以直接对 Siri 说"刚才的结果") |
 | `GET /siri/health` | 检查密钥是否有效 |
 
 `POST /siri` 的请求体还可以带 `"bot"`(DS Bot 的名称或 ID,名称可只写一部分),让这一句话发给指定的 DS Bot;不带则用设置页里绑定的 DS Bot,没绑定就用普通会话。
+
+出错时响应里同样带 `reply`(例如"密钥不对""没有找到这个 DS Bot"),快捷指令照常念出来,不会无声失败。
 
 所有请求都要带 `Authorization: Bearer <密钥>`。密钥、端口、等待时长在 DSH 设置里的 **Siri 语音** 页管理。
 
@@ -37,6 +39,7 @@
 ```bash
 npm install
 npm run build
+npm test
 ```
 
 构建会把 `plugin-src/` 与 `src/` 打成 `lib/index.js`(Host)和 `lib/client.js`(设置页)。

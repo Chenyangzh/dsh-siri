@@ -7,6 +7,7 @@
 // the same way.
 
 import { randomBytes } from 'node:crypto';
+import { networkInterfaces } from 'node:os';
 
 import {
   DEFAULT_SIRI_PORT,
@@ -24,6 +25,24 @@ function generateApiKey() {
   return `siri_${randomBytes(24).toString('base64url')}`;
 }
 
+function addressRank(address) {
+  if (/^(?:192\.168\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.)/u.test(address)) return 0;
+  if (/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./u.test(address)) return 1;
+  return 2;
+}
+
+/** IPv4 addresses a phone can reach this machine on: home LAN first, then Tailscale (100.64/10). */
+export function lanAddresses(interfaces = networkInterfaces()) {
+  const found = new Set();
+  for (const entries of Object.values(interfaces ?? {})) {
+    for (const entry of entries ?? []) {
+      const v4 = entry?.family === 'IPv4' || entry?.family === 4;
+      if (v4 && !entry.internal && !entry.address.startsWith('169.254.')) found.add(entry.address);
+    }
+  }
+  return [...found].sort((left, right) => addressRank(left) - addressRank(right));
+}
+
 export class SiriController {
   #credentials;
   #configStore;
@@ -37,8 +56,11 @@ export class SiriController {
   #closed = false;
   #transition = Promise.resolve();
   #dsBot = null;
+  #lanAddresses;
 
-  constructor({ credentials, configStore, createRuntime, logger = console, env = process.env }) {
+  constructor({
+    credentials, configStore, createRuntime, logger = console, env = process.env, getLanAddresses = lanAddresses,
+  }) {
     if (!credentials || typeof credentials.resolve !== 'function' || typeof credentials.set !== 'function') {
       throw new TypeError('SiriController requires a credential store');
     }
@@ -47,6 +69,7 @@ export class SiriController {
     this.#createRuntime = createRuntime;
     this.#logger = logger;
     this.#env = env;
+    this.#lanAddresses = getLanAddresses;
     this.#diagnostics = createConnectionDiagnostics({ channel: 'siri', logger });
   }
 
@@ -106,6 +129,8 @@ export class SiriController {
     const config = this.#configStore.get();
     const runtimeStatus = this.#runtime?.status ?? { ready: false, listening: false, port: null };
     const connected = Boolean(runtimeStatus.ready);
+    let addresses = [];
+    try { addresses = this.#lanAddresses(); } catch { /* the page falls back to a placeholder */ }
     return {
       bots: [{
         botId: SIRI_BOT_ID,
@@ -119,7 +144,8 @@ export class SiriController {
         rateLimitPerMinute: config.rateLimitPerMinute,
         allowedAddresses: config.allowedAddresses,
         apiKey: this.#apiKey || null,
-        endpoint: `http://<本机地址>:${config.port}/siri`,
+        lanAddresses: addresses,
+        endpoint: `http://${addresses[0] ?? '<本机地址>'}:${config.port}/siri`,
         ...(this.#error && config.enabled ? { error: this.#error } : {}),
       }],
       totals: { configured: config.enabled ? 1 : 0, connected: connected ? 1 : 0 },

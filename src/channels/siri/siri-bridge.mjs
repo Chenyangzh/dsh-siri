@@ -29,6 +29,51 @@ export const SIRI_EMPTY_REPLY = '这一轮已经处理完了，没有需要念�
 /** Spoken answer when the turn failed; the log carries the detail. */
 export const SIRI_FAILURE_REPLY = '抱歉，这次没能处理成功，请稍后再试。';
 
+/** Spoken answer to a recall when no turn has run yet. */
+export const SIRI_NO_LAST_REPLY = '还没有可以念的结果。';
+
+/** Spoken answer to a recall while the latest turn is still running. */
+export const SIRI_STILL_RUNNING_REPLY = '刚才的任务还在处理，请再等一会儿。';
+
+/**
+ * Spoken text for each error code the endpoint returns. The Shortcut only reads
+ * `reply` out of the response, so an error without one would leave Siri silent.
+ */
+export const SIRI_ERROR_REPLIES = Object.freeze({
+  'not-found': '接口地址不对，请检查快捷指令里的地址是否以 /siri 结尾。',
+  'method-not-allowed': '接口地址不对，请检查快捷指令里的地址。',
+  'forbidden-address': '这台设备的地址不在允许范围内，请在 Siri 语音设置里放行。',
+  unauthorized: '密钥不对，请在 DSH 设置的 Siri 语音页重新复制密钥。',
+  'bad-request': '请求格式不对，请检查快捷指令。',
+  'payload-too-large': '这句话太长了，请说短一点。',
+  'empty-text': '没有听清，请再说一次。',
+  'invalid-text': '没有听清，请再说一次。',
+  'ds-bot-not-found': '没有找到这个 DS Bot，请检查名称。',
+  'ds-bot-unavailable': 'DS Bot 暂时不可用，请检查 DS Bot 插件是否已启用。',
+  'rate-limited': '请求太频繁了，请稍后再试。',
+});
+
+/** Courtesy words and punctuation a recall may carry around its core phrase. */
+const RECALL_NOISE = /[\s。，,.!！?？、~～…]|请|麻烦|帮我|给我|告诉我|说一?下|念一?下|读一?下|看一?下|一下/gu;
+const RECALL_PATTERN = /^(?:(?:刚才|刚刚|上一?次|上一个|之前)的?(?:结果|回答|答案|回复)(?:呢|是什么|出来了吗|好了吗|怎么样了)?|(?:结果|答案)(?:呢|出来了吗|好了吗))$/u;
+
+/**
+ * Whether the caller asks for the previous turn's answer ("刚才的结果") instead
+ * of starting a new turn. This is what the pending reply tells them to say.
+ */
+export function isRecallRequest(prompt) {
+  if (typeof prompt !== 'string' || prompt.length > 40) return false;
+  return RECALL_PATTERN.test(prompt.replace(RECALL_NOISE, ''));
+}
+
+/** What to say for a `last()` snapshot. */
+export function spokenLast(last) {
+  if (last?.status === 'done') return last.reply || SIRI_EMPTY_REPLY;
+  if (last?.status === 'running') return SIRI_STILL_RUNNING_REPLY;
+  if (last?.status === 'failed') return SIRI_FAILURE_REPLY;
+  return SIRI_NO_LAST_REPLY;
+}
+
 /** Emoji, pictographs, regional flags and the invisible joiners that build them. */
 const EMOJI_PATTERN = /[\u{1F000}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{20E3}\u{2122}\u{2139}\u{E0020}-\u{E007F}]/gu;
 
@@ -74,7 +119,7 @@ export function toSpeechText(value) {
   text = text.replace(/\*\*|__|~~|[*_]/gu, '');
   text = text.replace(EMOJI_PATTERN, '');
   text = text.replace(/[ \t\u00a0]+/gu, ' ');
-  text = text.replace(/\n[ ]*\n+/gu, '\n');
+  text = text.replace(/[ ]*\n(?:[ ]*\n)*[ ]*/gu, '\n');
   text = text.trim();
   if (!text) return '';
   return clipAtSentence(text, SIRI_MAX_SPEECH_CHARS);

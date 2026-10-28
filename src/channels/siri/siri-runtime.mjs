@@ -14,7 +14,9 @@ import {
   SIRI_PENDING,
   SIRI_PENDING_REPLY,
   SIRI_REPLY_BUDGET_MS,
+  isRecallRequest,
   normalizeSiriPrompt,
+  spokenLast,
   toSpeechText,
 } from './siri-bridge.mjs';
 
@@ -30,6 +32,7 @@ export class SiriRuntime {
   #server = null;
   #turns = Promise.resolve();
   #recent = [];
+  #turnId = 0;
   #last = { status: 'none' };
   #status = { ready: false, listening: false, port: null, error: null };
 
@@ -81,8 +84,9 @@ export class SiriRuntime {
     });
   }
 
+  /** The latest turn, with `reply` always set so the Shortcut has something to read aloud. */
   last() {
-    return structuredClone(this.#last);
+    return { ...structuredClone(this.#last), reply: spokenLast(this.#last) };
   }
 
   /** Run one spoken turn; returns the speech-ready answer or a "still working" notice. */
@@ -93,6 +97,8 @@ export class SiriRuntime {
       error.code = 'invalid-text';
       throw error;
     }
+    // "刚才的结果" reads back the previous answer instead of starting a turn.
+    if (isRecallRequest(prompt)) return spokenLast(this.#last);
     const budget = Number.isSafeInteger(timeoutMs ?? this.#config.timeoutMs) && (timeoutMs ?? this.#config.timeoutMs) > 0
       ? Math.min(timeoutMs ?? this.#config.timeoutMs, 120_000)
       : SIRI_REPLY_BUDGET_MS;
@@ -120,7 +126,10 @@ export class SiriRuntime {
     const guidance = typeof this.#config.guidance === 'string' ? this.#config.guidance.trim() : '';
     const framed = guidance ? `${guidance}\n\n${prompt}` : prompt;
     const startedAt = new Date().toISOString();
+    const turnId = ++this.#turnId;
     this.#last = { status: 'running', prompt, startedAt };
+    // Only the latest request owns `last`: an older queued turn finishing must not hide it.
+    const record = (value) => { if (turnId === this.#turnId) this.#last = value; };
 
     // Spoken turns serialise, so one request cannot overtake another.
     const turn = this.#turns.catch(() => undefined).then(async () => {
@@ -145,16 +154,16 @@ export class SiriRuntime {
     this.#turns = turn;
     const settle = turn.then(
       (answer) => {
-        this.#last = {
+        record({
           status: 'done', prompt, startedAt, finishedAt: new Date().toISOString(),
           reply: toSpeechText(answer) || SIRI_EMPTY_REPLY,
-        };
+        });
       },
       (error) => {
-        this.#last = {
+        record({
           status: 'failed', prompt, startedAt, finishedAt: new Date().toISOString(),
           error: { code: typeof error?.code === 'string' && error.code ? error.code : 'siri-failed' },
-        };
+        });
       },
     );
 

@@ -7,11 +7,21 @@
 import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
+import { SIRI_ERROR_REPLIES } from './siri-bridge.mjs';
+
 export const SIRI_ENDPOINT_PATH = '/siri';
 export const SIRI_LAST_PATH = '/siri/last';
 export const SIRI_HEALTH_PATH = '/siri/health';
 
 const MAX_BODY_BYTES = 32 * 1024;
+
+/** Turn errors the caller can act on; anything else is spoken as a generic failure. */
+const TURN_ERROR_STATUS = Object.freeze({
+  'ds-bot-not-found': 404,
+  'ds-bot-unavailable': 503,
+  'rate-limited': 429,
+  'invalid-text': 400,
+});
 
 class SiriHttpError extends Error {
   constructor(status, code) {
@@ -31,6 +41,12 @@ function json(response, status, value, headers = {}) {
     ...headers,
   });
   response.end(body);
+}
+
+/** An error response; `reply` is what Siri says, since the Shortcut reads nothing else. */
+function fail(response, status, code, headers) {
+  const reply = Object.hasOwn(SIRI_ERROR_REPLIES, code) ? SIRI_ERROR_REPLIES[code] : '';
+  json(response, status, { ...(reply ? { reply } : {}), error: { code } }, headers);
 }
 
 function ipv4ToInt(text) {
@@ -55,7 +71,7 @@ export function addressAllowed(remote, allowed) {
     if (value === null || bits === undefined) return base.toLowerCase() === address.toLowerCase();
     const network = ipv4ToInt(base);
     const prefix = Number(bits);
-    if (network === null || !Number.isInteger(prefix)) return false;
+    if (network === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false;
     const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
     return ((value & mask) >>> 0) === ((network & mask) >>> 0);
   });
@@ -110,32 +126,32 @@ export function createSiriHttpHandler({
     try {
       pathname = new URL(request.url ?? '/', 'http://siri.local').pathname;
     } catch {
-      json(response, 400, { error: { code: 'bad-request' } });
+      fail(response, 400, 'bad-request');
       return;
     }
     if (![SIRI_ENDPOINT_PATH, SIRI_LAST_PATH, SIRI_HEALTH_PATH].includes(pathname)) {
-      json(response, 404, { error: { code: 'not-found' } });
+      fail(response, 404, 'not-found');
       return;
     }
     if (!addressAllowed(request.socket?.remoteAddress, getAllowedAddresses())) {
-      json(response, 403, { error: { code: 'forbidden-address' } });
+      fail(response, 403, 'forbidden-address');
       return;
     }
     const apiKey = getApiKey();
     if (!apiKey || !authorized(request, apiKey)) {
-      json(response, 401, { error: { code: 'unauthorized' } }, { 'www-authenticate': 'Bearer' });
+      fail(response, 401, 'unauthorized', { 'www-authenticate': 'Bearer' });
       return;
     }
     if (pathname !== SIRI_ENDPOINT_PATH) {
       if (request.method !== 'GET') {
-        json(response, 405, { error: { code: 'method-not-allowed' } }, { allow: 'GET' });
+        fail(response, 405, 'method-not-allowed', { allow: 'GET' });
         return;
       }
       json(response, 200, pathname === SIRI_HEALTH_PATH ? { ok: true } : runtime.last());
       return;
     }
     if (request.method !== 'POST') {
-      json(response, 405, { error: { code: 'method-not-allowed' } }, { allow: 'POST' });
+      fail(response, 405, 'method-not-allowed', { allow: 'POST' });
       return;
     }
 
@@ -143,12 +159,12 @@ export function createSiriHttpHandler({
     try {
       payload = await readJsonBody(request);
     } catch (error) {
-      json(response, error?.status ?? 400, { error: { code: error?.code ?? 'bad-request' } });
+      fail(response, error?.status ?? 400, error?.code ?? 'bad-request');
       return;
     }
     const text = typeof payload?.text === 'string' ? payload.text : '';
     if (!text.trim()) {
-      json(response, 400, { error: { code: 'empty-text' } });
+      fail(response, 400, 'empty-text');
       return;
     }
     const startedAt = Date.now();
@@ -158,20 +174,9 @@ export function createSiriHttpHandler({
       json(response, 200, { reply, elapsedMs: Date.now() - startedAt });
     } catch (error) {
       const code = typeof error?.code === 'string' && error.code ? error.code : 'siri-failed';
-      if (code === 'ds-bot-not-found') {
-        json(response, 404, { error: { code } });
-        return;
-      }
-      if (code === 'ds-bot-unavailable') {
-        json(response, 503, { error: { code } });
-        return;
-      }
-      if (code === 'rate-limited') {
-        json(response, 429, { error: { code } }, { 'retry-after': '30' });
-        return;
-      }
-      if (code === 'invalid-text') {
-        json(response, 400, { error: { code } });
+      const status = Object.hasOwn(TURN_ERROR_STATUS, code) ? TURN_ERROR_STATUS[code] : 0;
+      if (status) {
+        fail(response, status, code, code === 'rate-limited' ? { 'retry-after': '30' } : undefined);
         return;
       }
       logger.error?.(`Siri turn failed (${code}):`, error?.message ?? error);
@@ -185,7 +190,7 @@ export function listenSiriHttp({ handler, host, port, logger = console }) {
   const server = createServer((request, response) => {
     Promise.resolve(handler(request, response)).catch((error) => {
       logger.error?.('Siri endpoint request failed', error?.message ?? error);
-      json(response, 500, { error: { code: 'siri-failed' } });
+      fail(response, 500, 'siri-failed');
     });
   });
   return new Promise((resolve, reject) => {

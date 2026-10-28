@@ -14,10 +14,14 @@ export function SiriLogoGlyph({ size } = {}) {
   }));
 }
 
-function endpointFor(bot) {
+/** Every address the phone could use: the one this page was opened on, then the Host's LAN addresses. */
+function endpointsFor(bot) {
   const host = globalThis.location?.hostname;
-  const address = host && host !== 'localhost' && host !== '127.0.0.1' ? host : '<这台 Mac 的地址>';
-  return `http://${address}:${bot.port}/siri`;
+  const browserHost = host && host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]' ? host : null;
+  const lan = Array.isArray(bot.lanAddresses) ? bot.lanAddresses.filter((item) => typeof item === 'string') : [];
+  const addresses = [...new Set([browserHost, ...lan].filter(Boolean))];
+  if (addresses.length === 0) addresses.push('<这台 Mac 的地址>');
+  return addresses.map((address) => `http://${address}:${bot.port}/siri`);
 }
 
 const DS_BOT_NOTICES = {
@@ -125,7 +129,7 @@ export function SiriSettingsTab({ rpcCall, directoryPicker }) {
 
   const key = typeof bot.apiKey === 'string' ? bot.apiKey : '';
   const shownKey = revealed ? key : `${key.slice(0, 5)}${'•'.repeat(Math.max(0, key.length - 5))}`;
-  const endpoint = endpointFor(bot);
+  const [endpoint, ...otherEndpoints] = endpointsFor(bot);
   const boundBot = dsBots?.boundId ? dsBots.bots.find((entry) => entry.id === dsBots.boundId) : null;
   const dsBotActive = Boolean(dsBots?.boundId);
   const savePort = Number(draft.port);
@@ -246,6 +250,9 @@ export function SiriSettingsTab({ rpcCall, directoryPicker }) {
         h('div', { className: 'dim-siriValue' },
           h('code', null, endpoint),
           h('button', { type: 'button', className: 'dsiri-button', onClick: () => copy('url', endpoint) }, copied === 'url' ? '已复制' : '复制'))),
+      otherEndpoints.length > 0
+        ? h('p', { className: 'dim-siriHint' }, `其他可用地址：${otherEndpoints.join('、')}`)
+        : null,
       h('div', { className: 'dim-siriFields' },
         h('div', { className: 'dim-siriRow' },
           h('label', { htmlFor: 'dim-siri-port' }, '端口'),
