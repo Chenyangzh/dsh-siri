@@ -151,3 +151,28 @@ test('an older queued turn finishing does not replace the latest one', async () 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(runtime.last().reply, '第二件的答案');
 });
+
+test('the stored API key survives a restart', async () => {
+  const { SiriController } = await import('../src/channels/siri/siri-controller.mjs');
+  // Shaped like the Host's credential store: resolve() returns `{ value }`.
+  const saved = new Map();
+  const credentials = {
+    async resolve(ref) { return saved.has(ref) ? { value: saved.get(ref) } : null; },
+    async set(ref, value) { saved.set(ref, value); },
+  };
+  const config = { enabled: true, port: 0, name: 'Siri', apiKeyRef: 'DSH_SIRI_API_KEY', allowedAddresses: [] };
+  const boot = async () => {
+    const controller = new SiriController({
+      credentials, env: {}, logger: {}, getLanAddresses: () => [],
+      configStore: { get: () => structuredClone(config) },
+      createRuntime: async () => ({ status: { ready: true }, async start() {}, async stop() {} }),
+    });
+    await controller.initialize();
+    const key = controller.status().bots[0].apiKey;
+    await controller.close();
+    return key;
+  };
+  const first = await boot();
+  assert.match(first, /^siri_/u);
+  assert.equal(await boot(), first);
+});

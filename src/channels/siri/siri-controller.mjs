@@ -85,8 +85,10 @@ export class SiriController {
     const config = this.#configStore.get();
     const fromEnv = typeof this.#env?.SIRI_API_KEY === 'string' ? this.#env.SIRI_API_KEY.trim() : '';
     if (fromEnv) return fromEnv;
-    const stored = await this.#credentials.resolve(config.apiKeyRef);
-    if (typeof stored === 'string' && stored) return stored;
+    // The Host's credential store resolves to `{ value }`; a bare string is accepted too.
+    const resolved = await this.#credentials.resolve(config.apiKeyRef);
+    const stored = typeof resolved === 'string' ? resolved : resolved?.value;
+    if (typeof stored === 'string' && stored.trim()) return stored.trim();
     const created = generateApiKey();
     await this.#credentials.set(config.apiKeyRef, created);
     return created;
