@@ -2,6 +2,7 @@ import { createConnectionDiagnostics, diagnosticRpcResult } from '../../../../sr
 import { DS_BOT_ERROR_MESSAGES } from '../../../../src/channels/siri/ds-bot-service.mjs';
 import { validSiriAllowedAddress } from '../../../../src/channels/siri/config-store.mjs';
 import { registerManagementRpc } from '../../../management-rpc.mjs';
+import { SESSION_ID_PATTERN } from '../../../../src/channels/siri/siri-runtime.mjs';
 import { resolveRpcAuthority } from '../../rpc-authority.mjs';
 import { publicWorkspaceError, SET_WORKSPACE_ENDPOINT, validWorkspacePayload } from '../shared/workspace-rpc.mjs';
 import { SET_AGENT_PRESET_ENDPOINT, validAgentPresetPayload } from '../shared/agent-preset-rpc.mjs';
@@ -19,8 +20,17 @@ export const SIRI_ENDPOINTS = Object.freeze({
   setWorkspace: SET_WORKSPACE_ENDPOINT,
   setModel: SET_MODEL_ENDPOINT,
   setAgentPreset: SET_AGENT_PRESET_ENDPOINT,
+  getSession: 'bot.session.get',
+  setSession: 'bot.session.set',
+  clearSession: 'bot.session.clear',
 });
 export const SIRI_RPC_ENDPOINTS = Object.freeze(Object.values(SIRI_ENDPOINTS));
+
+/** Spoken-facing messages for the Session switch endpoints. */
+const SESSION_ERROR_MESSAGES = Object.freeze({
+  'session-id-invalid': '会话 ID 格式不对。',
+  'siri-not-ready': 'Siri 接口尚未就绪，请稍后重试。',
+});
 
 const CANCELLED = { ok: false, error: { code: 'cancelled', message: 'The request was cancelled.', details: {} } };
 
@@ -35,8 +45,13 @@ function exactKeys(value, allowed) {
 function payloadFailure(endpoint, payload) {
   if (!isRecord(payload)) return 'Payload must be an object.';
   if (endpoint === SIRI_ENDPOINTS.status || endpoint === SIRI_ENDPOINTS.resetApiKey
-    || endpoint === SIRI_ENDPOINTS.reconnect) {
+    || endpoint === SIRI_ENDPOINTS.reconnect || endpoint === SIRI_ENDPOINTS.getSession
+    || endpoint === SIRI_ENDPOINTS.clearSession) {
     return exactKeys(payload, []) ? null : `${endpoint} does not accept fields.`;
+  }
+  if (endpoint === SIRI_ENDPOINTS.setSession) {
+    return exactKeys(payload, ['sessionId']) && typeof payload.sessionId === 'string'
+      && SESSION_ID_PATTERN.test(payload.sessionId) ? null : '请提供有效的会话 ID。';
   }
   if (endpoint === SIRI_ENDPOINTS.dsBotStatus || endpoint === SIRI_ENDPOINTS.unbindDsBot) {
     return exactKeys(payload, []) ? null : `${endpoint} does not accept fields.`;
@@ -114,6 +129,12 @@ export function createSiriRpcHandler(controller) {
         value = await controller.updateWorkspace(payload.botId, payload.workspace);
       } else if (endpoint === SIRI_ENDPOINTS.setModel) {
         value = await controller.updateModel(payload.botId, payload.model);
+      } else if (endpoint === SIRI_ENDPOINTS.getSession) {
+        value = { sessionId: controller.sessionId() };
+      } else if (endpoint === SIRI_ENDPOINTS.setSession) {
+        value = { sessionId: await controller.setSession(payload.sessionId) };
+      } else if (endpoint === SIRI_ENDPOINTS.clearSession) {
+        value = { sessionId: await controller.clearSession() };
       } else {
         value = await controller.updateAgentPreset(payload.botId, payload.agentPreset);
       }
@@ -121,6 +142,9 @@ export function createSiriRpcHandler(controller) {
     } catch (error) {
       if (typeof error?.code === 'string' && DS_BOT_ERROR_MESSAGES[error.code]) {
         return { ok: false, error: { code: error.code, message: DS_BOT_ERROR_MESSAGES[error.code], details: {} } };
+      }
+      if (typeof error?.code === 'string' && SESSION_ERROR_MESSAGES[error.code]) {
+        return { ok: false, error: { code: error.code, message: SESSION_ERROR_MESSAGES[error.code], details: {} } };
       }
       const workspaceError = publicWorkspaceError(error);
       return diagnosticRpcResult(diagnostics, error, signal?.aborted

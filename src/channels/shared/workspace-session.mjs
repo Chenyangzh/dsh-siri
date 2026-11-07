@@ -117,6 +117,7 @@ export async function askInWorkspaceSession({
     ?? (typeof askOptions === 'object' ? askOptions?.signal : undefined);
   const renameOptions = renameSignal ? { signal: renameSignal } : undefined;
   let unreadableSessionId;
+  let recoveryNotice = null;
   while (true) {
     const diagnostic = { stage: 'session.prepare', submissionState: 'not-submitted' };
     let dsBotSession = false;
@@ -128,10 +129,29 @@ export async function askInWorkspaceSession({
         let sessionId = dsBotSessionId || state.sessionFor(key);
         diagnostic.sessionId = sessionId;
         let session = sessionId ? workspaceSession(harness, sessionId, key) : null;
-        const replacingUnreadable = sessionId && sessionId === unreadableSessionId;
-        if (!session || replacingUnreadable || !(await sessionExists(session, existsOptions))) {
+        const hadSession = Boolean(session);
+        const replacingUnreadable = Boolean(sessionId) && sessionId === unreadableSessionId;
+        // An archived Session still "exists", so binding to it would only fail at
+        // ask() time with `session-archived`. Treat it as unusable up front and
+        // continue in a fresh Session, which is what the caller expects after
+        // deleting or archiving a conversation.
+        const archived = Boolean(session) && !replacingUnreadable
+          && typeof harness.sessionArchived === 'function'
+          && await harness.sessionArchived(sessionId, existsOptions);
+        // sessionExists() also reports archived Sessions as existing, so skip it
+        // once the archived check already settled the question.
+        const exists = !session ? false : archived ? true : await sessionExists(session, existsOptions);
+        const missing = Boolean(session) && !replacingUnreadable && !archived && !exists;
+        if (!session || replacingUnreadable || archived || !exists) {
           if (dsBotSessionId) {
             throw Object.assign(new Error('DS Bot 的当前会话不可用。'), { code: 'ds-bot-unavailable' });
+          }
+          if (archived) {
+            recoveryNotice = t('绑定的会话已归档，已新建会话继续。原会话记录仍保留，历史上下文不会自动带入。');
+          } else if (missing) {
+            recoveryNotice = t('绑定的会话已不存在，已新建会话继续。');
+          } else if (replacingUnreadable) {
+            recoveryNotice = t('绑定会话的日志已损坏，已切换到新会话并继续处理本条消息。原会话记录已保留，历史上下文不会自动带入。');
           }
           sessionId = await createSession(harness, {
             conversationKey: key,
@@ -159,15 +179,13 @@ export async function askInWorkspaceSession({
           if (conversationGenerationMoved(harness, key, conversationGeneration)) {
             throw workspaceSessionStaleError();
           }
-          return { sessionId, session, recovered: replacingUnreadable };
+          return { sessionId, session, recovered: hadSession && (replacingUnreadable || archived || missing) };
         }
         return { sessionId, session };
       });
       if (!binding) continue;
       diagnostic.sessionId = binding.sessionId;
-      if (binding.recovered) {
-        await onNotice?.(t('绑定会话的日志已损坏，已切换到新会话并继续处理本条消息。原会话记录已保留，历史上下文不会自动带入。'));
-      }
+      if (binding.recovered && recoveryNotice) await onNotice?.(recoveryNotice);
       diagnostic.stage = 'prompt.prepare';
       const artifacts = [];
       const originalOnArtifact = typeof askOptions === 'object'

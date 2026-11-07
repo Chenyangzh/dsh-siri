@@ -1448,6 +1448,11 @@ export class HarnessClient {
     }
   }
 
+  /** Whether the workspace reports this Session as archived (ask() would refuse it). */
+  sessionArchived(sessionId, options = {}) {
+    return this.#isSessionArchived(sessionId, options);
+  }
+
   async respondInteraction(rpcId, result, options = {}) {
     if (typeof rpcId !== 'string' || !rpcId) throw new TypeError('rpcId is required');
     if (!result || typeof result !== 'object' || typeof result.ok !== 'boolean') {

@@ -20,6 +20,9 @@ import {
   toSpeechText,
 } from './siri-bridge.mjs';
 
+/** Harness Session ids the switch endpoint accepts. */
+export const SESSION_ID_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
 export class SiriRuntime {
   #config;
   #getApiKey;
@@ -84,6 +87,30 @@ export class SiriRuntime {
     });
   }
 
+  /** The Session the next spoken turn continues in, or null before the first turn. */
+  get sessionId() {
+    return this.#state.sessionFor(SIRI_CONVERSATION_KEY) ?? null;
+  }
+
+  /**
+   * Continue in an existing Session instead of the current one. The binding is
+   * kept in the state store (memory + state.json), so a switch applies to the
+   * next request without restarting the plugin.
+   */
+  async setSession(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
+      throw Object.assign(new TypeError('Invalid Siri session id'), { code: 'session-id-invalid' });
+    }
+    await this.#state.setSession(SIRI_CONVERSATION_KEY, sessionId);
+    return this.sessionId;
+  }
+
+  /** Forget the binding so the next spoken turn starts a fresh Session. */
+  async clearSession() {
+    await this.#state.clearSession(SIRI_CONVERSATION_KEY);
+    return null;
+  }
+
   /** The latest turn, with `reply` always set so the Shortcut has something to read aloud. */
   last() {
     return { ...structuredClone(this.#last), reply: spokenLast(this.#last) };
@@ -139,14 +166,18 @@ export class SiriRuntime {
         const followUp = await this.#questions.answer(open, prompt, { waitMs: this.#replyTimeoutMs });
         if (followUp !== null) return followUp;
       }
+      let notice = '';
       const { answer } = await askInWorkspaceSession({
         harness: this.#harness,
         state: this.#state,
         key: conversationKey,
         text: framed,
         askOptions: { timeoutMs: this.#replyTimeoutMs },
+        // The bound Session was archived or deleted and a fresh one was started:
+        // say so once, so the caller knows the history did not carry over.
+        onNotice: (message) => { notice = message; },
       });
-      const reply = typeof answer === 'string' ? answer : '';
+      const reply = [notice, typeof answer === 'string' ? answer : ''].filter(Boolean).join('\n\n');
       // ask_user ends the Bot's turn with a card; read it out after what the Bot said.
       const next = await this.#questions?.pending(conversationKey);
       return next ? [reply, this.#questions.speak(next.card)].filter(Boolean).join('\n\n') : reply;

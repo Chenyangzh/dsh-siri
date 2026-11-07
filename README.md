@@ -50,6 +50,8 @@ npm test
 - 在 DSH 设置里新增“Siri 语音”页:查看和重置密钥、改端口、选工作区/模型/Agent Preset、写语音指引、限频、限制来源地址。
 - 绑定 DS Bot:对 Siri 说的话直接进入所选 DS Bot 的会话;请求里可用 `bot` 字段临时指定另一个 Bot。
 - DS Bot 提问(实验性):Bot 用 `ask_user` 提问时,Siri 念出问题和选项,下一句话作为回答交给 Bot。
+- 接续已有会话:管理接口 `bot.session.get` / `bot.session.set` / `bot.session.clear` 可以读出、切换或清除 Siri 当前绑定的会话,下一次请求立即生效,不需要重启插件。
+- 会话失效自愈:绑定的会话被归档或删除后,下一条消息会自动在新会话里继续,并在回答前说明原会话的历史不会带入。
 
 ## 要求
 

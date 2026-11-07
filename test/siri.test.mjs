@@ -9,6 +9,7 @@ import { addressAllowed, createSiriHttpHandler, listenSiriHttp } from '../src/ch
 import { lanAddresses } from '../src/channels/siri/siri-controller.mjs';
 import { parseSpokenAnswer } from '../src/channels/siri/question-flow.mjs';
 import { SiriRuntime } from '../src/channels/siri/siri-runtime.mjs';
+import { askInWorkspaceSession } from '../src/channels/shared/workspace-session.mjs';
 
 test('toSpeechText drops code, links, markup and emoji', () => {
   const text = toSpeechText('## 标题\n\n- **加粗** 👍 [链接](https://x.y/(a))\n\n```js\nconst a = 1;\n```\n`行内`');
@@ -175,4 +176,77 @@ test('the stored API key survives a restart', async () => {
   const first = await boot();
   assert.match(first, /^siri_/u);
   assert.equal(await boot(), first);
+});
+
+test('the runtime reports, switches and clears the Session the next turn uses', async () => {
+  const sessions = new Map();
+  const runtime = new SiriRuntime({
+    config: { timeoutMs: 1_000, rateLimitPerMinute: 0 },
+    state: {
+      sessionFor: (key) => sessions.get(key) ?? null,
+      setSession: async (key, id) => { sessions.set(key, id); },
+      clearSession: async (key) => { sessions.delete(key); },
+    },
+    logger: {},
+  });
+  const id = 'session-11111111-2222-3333-4444-555555555555';
+  assert.equal(runtime.sessionId, null);
+  assert.equal(await runtime.setSession(id), id);
+  assert.equal(runtime.sessionId, id);
+  await assert.rejects(() => runtime.setSession('../../etc/passwd'), { code: 'session-id-invalid' });
+  assert.equal(await runtime.clearSession(), null);
+  assert.equal(runtime.sessionId, null);
+});
+
+test('an archived binding starts a fresh Session and says so', async () => {
+  const archivedId = 'session-11111111-2222-3333-4444-555555555555';
+  const freshId = 'session-99999999-8888-7777-6666-555555555555';
+  const asked = [];
+  const notices = [];
+  let bound = archivedId;
+  const result = await askInWorkspaceSession({
+    harness: {
+      sessionArchived: async (id) => id === archivedId,
+      sessionExists: async () => true,
+      createSession: async () => freshId,
+      ask: async (id, prompt) => { asked.push([id, prompt]); return '收到'; },
+    },
+    state: {
+      sessionFor: () => bound,
+      setSession: async (_key, id) => { bound = id; return true; },
+      clearSession: async () => { bound = null; },
+    },
+    key: 'direct:siri',
+    text: '你好',
+    onNotice: (message) => notices.push(message),
+  });
+  assert.equal(result.answer, '收到');
+  assert.equal(bound, freshId);
+  assert.deepEqual(asked, [[freshId, '你好']]);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /归档/u);
+});
+
+test('a live binding is reused without creating a Session', async () => {
+  const liveId = 'session-77777777-8888-9999-aaaa-bbbbbbbbbbbb';
+  let created = 0;
+  const asked = [];
+  const result = await askInWorkspaceSession({
+    harness: {
+      sessionArchived: async () => false,
+      sessionExists: async () => true,
+      createSession: async () => { created += 1; return 'session-should-not-exist'; },
+      ask: async (id, prompt) => { asked.push([id, prompt]); return '好'; },
+    },
+    state: {
+      sessionFor: () => liveId,
+      setSession: async () => true,
+      clearSession: async () => {},
+    },
+    key: 'direct:siri',
+    text: '继续',
+  });
+  assert.equal(result.answer, '好');
+  assert.equal(created, 0);
+  assert.deepEqual(asked, [[liveId, '继续']]);
 });

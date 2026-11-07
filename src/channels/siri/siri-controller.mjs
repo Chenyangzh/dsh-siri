@@ -229,6 +229,29 @@ export class SiriController {
     return this.initialize();
   }
 
+  /** The Session the next spoken turn continues in (null before the first turn). */
+  sessionId() {
+    return this.#runtime?.sessionId ?? null;
+  }
+
+  /** Continue in an existing Session; applies to the next request, no reload needed. */
+  async setSession(sessionId) {
+    const runtime = this.#runtime;
+    if (!runtime?.status?.ready) {
+      throw Object.assign(new Error('Siri 接口尚未就绪，请稍后重试。'), { code: 'siri-not-ready' });
+    }
+    return runtime.setSession(sessionId);
+  }
+
+  /** Drop the binding so the next spoken turn starts a fresh Session. */
+  async clearSession() {
+    const runtime = this.#runtime;
+    if (!runtime?.status?.ready) {
+      throw Object.assign(new Error('Siri 接口尚未就绪，请稍后重试。'), { code: 'siri-not-ready' });
+    }
+    return runtime.clearSession();
+  }
+
   async #stopRuntime() {
     const runtime = this.#runtime;
     this.#runtime = null;
